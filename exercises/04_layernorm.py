@@ -30,18 +30,31 @@ import torch
 
 # ✏️ YOUR IMPLEMENTATION HERE
 
-def my_layer_norm(x, gamma, beta, eps=1e-5):
-    pass  # Replace this
+
+def my_layer_norm(x: torch.Tensor, gamma: torch.Tensor, beta: torch.Tensor, eps=1e-5):
+    # shift
+    x_mean = x.mean(dim=-1, keepdim=True)
+    x_var = x.var(dim=-1, keepdim=True, unbiased=False)
+
+    x = (x - x_mean) / (x_var + eps).sqrt()
+
+    return x * gamma + beta
+
 
 if __name__ == "__main__":
     # 🧪 Debug
     x = torch.randn(2, 8)
     gamma = torch.ones(8)
-    beta = torch.zeros(8)
+    beta = torch.randn(8)
 
     out = my_layer_norm(x, gamma, beta)
     ref = torch.nn.functional.layer_norm(x, [8], gamma, beta)
 
-    print("Your output mean:", out.mean(dim=-1))   # should be ~0
-    print("Your output std: ", out.std(dim=-1))     # should be ~1
+    print(f"{x=}")
+    print(f"{gamma=}")
+    print(f"{beta=}")
+    print(f"{out=}")
+    print(f"{x.std(dim=-1)=}")
+    print("Your output mean:", out.mean(dim=-1))  # should be ~0
+    print("Your output std: ", out.std(dim=-1))  # should be ~1
     print("Match ref?      ", torch.allclose(out, ref, atol=1e-4))
