@@ -84,9 +84,19 @@ def main():
     tasks = json.loads((ROOT / 'judge/tasks.json').read_text())
     if args.command in ('list', 'status'):
         progress = load_progress() if args.command == 'status' else {}
+        styles = {
+            'solved': ('✅', '\033[32m'),
+            'attempted': ('🔥', '\033[33m'),
+            'todo': ('⚪', '\033[36m'),
+        }
+        use_color = sys.stdout.isatty() and 'NO_COLOR' not in os.environ
         for task_id, task in sorted(tasks.items(), key=lambda item: item[1]['exercise']):
             state = progress.get(task_id, {}).get('status', 'todo')
-            print(f"{state:9} {task_id:24} {task['difficulty']:6} exercises/{task['exercise']}")
+            icon, color = styles.get(state, ('❔', ''))
+            label = f'{state:9}'
+            if use_color and color:
+                label = f'{color}{label}\033[0m'
+            print(f"{icon} {label} {task_id:24} {task['difficulty']:6} exercises/{task['exercise']}")
         return 0
     aliases = {Path(task['exercise']).stem: key for key, task in tasks.items()}
     task_id = aliases.get(args.task, args.task)
