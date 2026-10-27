@@ -28,9 +28,11 @@ import torch
 
 # ✏️ YOUR IMPLEMENTATION HERE
 
+
 def my_softmax(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    x = x - x.max()
+    x = x - x.max(dim=dim, keepdim=True).values
     return x.exp() / x.exp().sum(dim=dim, keepdim=True)
+
 
 if __name__ == "__main__":
     # 🧪 Debug
