@@ -41,6 +41,10 @@
       {
         "name": "Gradient flow",
         "code": "\nimport torch\nmoe = {fn}(d_model=16, d_ff=32, num_experts=4, top_k=2)\nx = torch.randn(1, 4, 16, requires_grad=True)\nmoe(x).sum().backward()\nassert x.grad is not None, 'x.grad is None'\n"
+      },
+      {
+        "name": "Top-k routing produces weighted expert outputs",
+        "code": "\nimport torch\ntorch.manual_seed(27)\nmodel = {fn}(4, 8, 4, top_k=2)\nx = torch.randn(2, 3, 4)\nlogits = model.router(x)\nvalues, indices = logits.topk(2, dim=-1)\nweights = torch.softmax(values, dim=-1)\nreference = torch.zeros_like(x)\nfor b in range(2):\n    for s in range(3):\n        for k in range(2):\n            reference[b, s] += weights[b, s, k] * model.experts[indices[b, s, k].item()](x[b, s])\nassert torch.allclose(model(x), reference, atol=1e-6, rtol=1e-5), 'Output must combine the selected experts using normalized routing weights'\n"
       }
     ],
     "exercise": "28_moe.py"
@@ -70,6 +74,10 @@
       {
         "name": "Gradient flow",
         "code": "\nimport torch\ntorch.manual_seed(0)\ngqa = {fn}(d_model=16, num_heads=4, num_kv_heads=2)\nx = torch.randn(1, 4, 16, requires_grad=True)\ngqa.forward(x).sum().backward()\nassert x.grad is not None, 'x.grad is None'\nassert gqa.W_q.weight.grad is not None and gqa.W_k.weight.grad is not None, 'Missing weight gradients'\n"
+      },
+      {
+        "name": "Forward uses grouped key and value heads",
+        "code": "\nimport torch\nimport math\ntorch.manual_seed(41)\nmodel = {fn}(8, 4, 2)\nx = torch.randn(2, 3, 8)\nq = model.W_q(x).reshape(2, 3, 4, 2).transpose(1, 2)\nk = model.W_k(x).reshape(2, 3, 2, 2).transpose(1, 2).repeat_interleave(2, dim=1)\nv = model.W_v(x).reshape(2, 3, 2, 2).transpose(1, 2).repeat_interleave(2, dim=1)\nweights = torch.softmax(q @ k.transpose(-2, -1) / math.sqrt(2), dim=-1)\nreference = model.W_o((weights @ v).transpose(1, 2).reshape(2, 3, 8))\nassert torch.allclose(model.forward(x), reference, atol=1e-6, rtol=1e-5), 'Forward must share each KV head with its group of query heads'\n"
       }
     ],
     "exercise": "10_gqa.py"
@@ -319,6 +327,10 @@
       {
         "name": "Weight is buffer not parameter",
         "code": "\nimport torch\nq = {fn}(torch.randn(4, 4))\nparam_names = [n for n, _ in q.named_parameters()]\nassert 'weight_int8' not in param_names, 'weight_int8 should be a buffer'\nassert 'scale' not in param_names, 'scale should be a buffer'\n"
+      },
+      {
+        "name": "Forward uses dequantized weights and bias, including zero rows",
+        "code": "\nimport torch\nweight = torch.tensor([[0., 0., 0.], [1., -0.4, 0.2], [-0.5, 2., 0.7]])\nbias = torch.tensor([2., -1., 0.5])\nmodel = {fn}(weight, bias)\nx = torch.tensor([[1., 2., -3.], [-2., 1., 0.5]])\nreference = x @ (model.weight_int8.float() * model.scale).T + bias\nout = model(x)\nassert torch.isfinite(out).all(), 'Output must remain finite for a zero weight row'\nassert torch.allclose(out, reference, atol=1e-6), 'Forward must use dequantized weights and bias'\nassert torch.allclose(out[:, 0], bias[0].expand_as(out[:, 0])), 'A zero weight row must contribute only its bias'\n"
       }
     ],
     "exercise": "36_int8_quantization.py"
@@ -642,6 +654,14 @@
         "code": "\nimport torch\ntorch.manual_seed(0)\nx = torch.randn(4, 8)\ngamma = torch.randn(8)\nbeta = torch.randn(8)\n\n# Pretend these came from previous training\nrunning_mean = torch.randn(8)\nrunning_var = torch.rand(8) + 0.5  # positive\n\nout = {fn}(x, gamma, beta, running_mean.clone(), running_var.clone(), training=False)\nref = gamma * (x - running_mean) / torch.sqrt(running_var + 1e-5) + beta\nassert torch.allclose(out, ref, atol=1e-4), 'Inference should use running stats'\n"
       },
       {
+        "name": "Training mode — running statistics remain buffers",
+        "code": "\nimport torch\nx = torch.randn(8, 4, requires_grad=True)\ngamma = torch.ones(4, requires_grad=True)\nbeta = torch.zeros(4, requires_grad=True)\nrunning_mean = torch.zeros(4)\nrunning_var = torch.ones(4)\nfor _ in range(2):\n    out = {fn}(x, gamma, beta, running_mean, running_var, training=True)\n    assert not running_mean.requires_grad and running_mean.grad_fn is None, 'running_mean must not track gradients'\n    assert not running_var.requires_grad and running_var.grad_fn is None, 'running_var must not track gradients'\n    out.square().sum().backward()\n"
+      },
+      {
+        "name": "Inference mode — running statistics remain unchanged",
+        "code": "\nimport torch\nx = torch.randn(8, 4)\ngamma = torch.ones(4)\nbeta = torch.zeros(4)\nrunning_mean = torch.randn(4)\nrunning_var = torch.rand(4) + 0.5\nmean_before = running_mean.clone()\nvar_before = running_var.clone()\n{fn}(x, gamma, beta, running_mean, running_var, training=False)\nassert torch.equal(running_mean, mean_before), 'Inference must not update running_mean'\nassert torch.equal(running_var, var_before), 'Inference must not update running_var'\n"
+      },
+      {
         "name": "Gradient flow w.r.t inputs and affine params",
         "code": "\nimport torch\nx = torch.randn(4, 8, requires_grad=True)\ngamma = torch.ones(8, requires_grad=True)\nbeta = torch.zeros(8, requires_grad=True)\nrunning_mean = torch.zeros(8)\nrunning_var = torch.ones(8)\nout = {fn}(x, gamma, beta, running_mean, running_var, training=True)\nout.sum().backward()\nassert x.grad is not None, 'x.grad is None'\nassert gamma.grad is not None, 'gamma.grad is None'\nassert beta.grad is not None, 'beta.grad is None'\n"
       }
@@ -740,6 +760,10 @@
       {
         "name": "Numerical stability",
         "code": "\nimport torch\nx = torch.tensor([1000., 1001., 1002.])\nout = {fn}(x, dim=-1)\nassert not torch.isnan(out).any(), 'NaN in output — not numerically stable'\nassert not torch.isinf(out).any(), 'Inf in output — not numerically stable'\nexpected = torch.softmax(x, dim=-1)\nassert torch.allclose(out, expected, atol=1e-5), 'Values differ on large input'\n"
+      },
+      {
+        "name": "Numerical stability across independent slices",
+        "code": "\nimport torch\nx = torch.tensor([[1000., 1001.], [-1000., -999.]])\nout = {fn}(x, dim=1)\nassert torch.isfinite(out).all(), 'Each slice must remain numerically stable'\nassert torch.allclose(out, torch.softmax(x, dim=1), atol=1e-6), 'Incorrect softmax across slices'\n"
       }
     ],
     "exercise": "02_softmax.py"
@@ -877,6 +901,10 @@
       {
         "name": "Gradient flow",
         "code": "\nimport torch\nlayer = {fn}(8, 4)\nx = torch.randn(2, 8)\ny = layer.forward(x)\ny.sum().backward()\nassert layer.weight.grad is not None, 'weight.grad is None'\nassert layer.bias.grad is not None, 'bias.grad is None'\n"
+      },
+      {
+        "name": "Weight and bias initialization",
+        "code": "\nimport torch\nimport math\ntorch.manual_seed(17)\nlayer = {fn}(128, 256)\nassert torch.equal(layer.bias, torch.zeros_like(layer.bias)), 'Bias must initialize to zero'\nassert abs(layer.weight.mean().item()) < 0.01, 'Weight mean should be near zero'\nassert abs(layer.weight.std().item() - 1 / math.sqrt(128)) < 0.005, 'Weight initialization must use randn scaled by 1/sqrt(in_features)'\n"
       }
     ],
     "exercise": "03_linear.py"
